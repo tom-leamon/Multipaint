@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Minimal PeerJS Example</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+  </head>
+  <body>
+    <h1>Minimal PeerJS Example</h1>
+    <p id="status"></p>
+    <script>
+      const statusEl = document.getElementById('status');
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+        console.log(msg);
+      }
+      const urlParams = new URLSearchParams(window.location.search);
+      const hostId = urlParams.get('host');
+      const myPeer = new Peer();
+      myPeer.on('open', id => {
+        if (!hostId || hostId === id) {
+          // Act as host
+          if (!hostId) {
+            // Rewrite URL automatically to include the host id
+            window.history.replaceState(null, '', '?host=' + id);
+          }
+          setStatus('Hosting. Your peer ID is: ' + id + '. Share this URL: ?host=' + id);
+          myPeer.on('connection', conn => {
+            conn.on('open', () => {
+              setStatus('Client connected: ' + conn.peer);
+              conn.send('Welcome client ' + conn.peer + ' from host ' + id);
+            });
+            conn.on('data', data => {
+              setStatus('Received from ' + conn.peer + ': ' + data);
+            });
+          });
+        } else {
+          // Act as client and connect to host
+          setStatus('Connecting to host ' + hostId + ' from client ' + id);
+          const conn = myPeer.connect(hostId);
+          conn.on('open', () => {
+            setStatus('Connected to host: ' + hostId);
+            conn.send('Hello host, this is client ' + id);
+          });
+          conn.on('data', data => {
+            setStatus('Received from host: ' + data);
+          });
+        }
+      });
+      myPeer.on('error', err => {
+        setStatus('Error: ' + err);
+      });
+    </script>
+  </body>
+</html>
