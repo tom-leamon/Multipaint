@@ -6,6 +6,10 @@
   <title>P2P Paint Brush Game</title>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <style>
+    * {
+      user-select: none !important;
+      -webkit-user-select: none !important;
+    }
     html, body {
       margin: 0;
       padding: 0;
@@ -13,6 +17,8 @@
       touch-action: manipulation;
       font-family: sans-serif;
       font-weight: bold;
+      user-select: none;
+      -webkit-user-select: none !important;
     }
     canvas {
       display: block;
@@ -138,10 +144,6 @@ function getNextAvailableColor() {
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const winOverlay = document.getElementById('winOverlay');
-
-function getRandomColor() {
-    return `hsl(${Math.floor(Math.random() * 360)}, 70%, 60%)`;
-}
 
 function pointToSegmentDistance(px, py, x1, y1, x2, y2) {
     const dx = x2 - x1;
@@ -293,14 +295,15 @@ function initializePeer() {
 }
 
 function initializeAsHost() {
-    const now = Date.now();
+    const currentTime = Date.now();
+    usedColors.clear(); // Reset used colors when host initializes
     const playerColor = getNextAvailableColor();
     state[myId] = {
         position: { x: 0.5, y: 0.5 },
         color: playerColor.hex,
         colorName: playerColor.name,
-        trail: [{ x: 0.5, y: 0.5, t: now }],
-        lastUpdate: now
+        trail: [{ x: 0.5, y: 0.5, t: currentTime }],
+        lastUpdate: currentTime
     };
     localPlayer = state[myId];
     broadcastState();
@@ -324,30 +327,38 @@ function generateTempId() {
 
 function connectToHost(hostId) {
     console.log(`Attempting to connect to host: ${hostId}`);
-    const conn = peer.connect(hostId, { reliable: true });
+    const connection = peer.connect(hostId, { reliable: true });
 
-    conn.on('open', () => {
+    connection.on('open', () => {
         console.log('Connected to host successfully!');
-        connections.set(hostId, conn);
+        connections.set(hostId, connection);
         document.getElementById('connectionStatus').textContent = 'Connected to host!';
+        
+        // Request color assignment from host
+        connection.send({
+            type: 'requestInitialization',
+            playerId: myId
+        });
     });
 
-    conn.on('data', handleMessage);
+    connection.on('data', handleMessage);
 
-    conn.on('error', (err) => {
-        console.error(`Connection failed to host ${hostId}:`, err);
-        becomeHost(); // If connection fails, take over as host
+    connection.on('error', (error) => {
+        console.error(`Connection failed to host ${hostId}:`, error);
+        becomeHost();
     });
 
-    conn.on('close', () => {
+    connection.on('close', () => {
         console.warn(`Lost connection to host ${hostId}, becoming host.`);
-        becomeHost(); // If the connection unexpectedly closes, take over
+        becomeHost();
     });
 
+    setTimeout(() => {
         if (!connections.has(hostId)) {
             console.warn(`Timeout: Could not establish connection to ${hostId}, switching to host mode.`);
             becomeHost();
         }
+    }, 1000);
 }
 
 
@@ -375,44 +386,53 @@ function resetGame() {
     }
 }
 
-function handleNewConnection(conn) {
-    conn.on('open', () => {
-        connections.set(conn.peer, conn);
-        const now = Date.now();
-        const playerColor = getNextAvailableColor();
-        state[conn.peer] = {
-            position: { x: 0.5, y: 0.5 },
-            color: playerColor.hex,
-            colorName: playerColor.name,
-            trail: [{ x: 0.5, y: 0.5, t: now }],
-            lastUpdate: now
-        };
-        
-        // Reset the game when a new player connects
-        resetGame();
+function handleNewConnection(connection) {
+    connection.on('open', () => {
+        connections.set(connection.peer, connection);
+        // Wait for requestInitialization message instead of initializing here
     });
 
-    conn.on('data', handleMessage);
+    connection.on('data', handleMessage);
     
-    conn.on('close', () => {
-        // Free up the color when a player disconnects
-        if (state[conn.peer]) {
-            usedColors.delete(state[conn.peer].colorName);
+    connection.on('close', () => {
+        if (state[connection.peer]) {
+            usedColors.delete(state[connection.peer].colorName);
         }
-        connections.delete(conn.peer);
-        delete state[conn.peer];
-        broadcastState();
+        connections.delete(connection.peer);
+        delete state[connection.peer];
+        if (isHost) {
+            broadcastState();
+        }
     });
 }
 
 function handleMessage(data) {
-    if (data.type === 'state') {
+    if (data.type === 'requestInitialization' && isHost) {
+        // Host assigns a color to the new player
+        const playerColor = getNextAvailableColor();
+        const currentTime = Date.now();
+        state[data.playerId] = {
+            position: { x: 0.5, y: 0.5 },
+            color: playerColor.hex,
+            colorName: playerColor.name,
+            trail: [{ x: 0.5, y: 0.5, t: currentTime }],
+            lastUpdate: currentTime
+        };
+        broadcastState();
+    } else if (data.type === 'state') {
+        const ourState = state[myId];
         state = data.state;
+        if (ourState) {
+            state[myId] = ourState;
+        }
+        
         if (myId && state[myId]) {
             localPlayer = state[myId];
         }
+        
         draw();
         updateCoverage(data.coverage);
+        
         if (data.winner) {
             gameWon = true;
             showWinOverlay(data.winner);
@@ -424,58 +444,79 @@ function handleMessage(data) {
             gameWon = false;
             hideWinOverlay();
         }
-    } else if (data.type === 'move' && isHost) {
-        handlePlayerMove(data.playerId, data.dx, data.dy);
+    } else if (data.type === 'playerUpdate') {
+        if (data.playerId !== myId && state[data.playerId]) {
+            state[data.playerId].position = data.position;
+            state[data.playerId].trail = data.trail;
+            state[data.playerId].lastUpdate = data.lastUpdate;
+            
+            if (isHost) {
+                const coverage = computeCoverage();
+                const winner = checkWinner(coverage);
+                broadcastState();
+            }
+            draw();
+        }
     }
 }
 
-function handlePlayerMove(playerId, dx, dy) {
+// Modify handlePlayerMove for host
+function handlePlayerMove(playerId, position, trail, lastUpdate) {
     if (!gameActive || !state[playerId]) return;
     
-    const player = state[playerId];
-    const now = Date.now();
-    const newX = Math.min(Math.max(player.position.x + dx, 0), 1);
-    const newY = Math.min(Math.max(player.position.y + dy, 0), 1);
-    
-    player.position = { x: newX, y: newY };
-    player.lastUpdate = now;
-    player.trail.push({ x: newX, y: newY, t: now });
+    state[playerId].position = position;
+    state[playerId].trail = trail;
+    state[playerId].lastUpdate = lastUpdate;
     
     broadcastState();
 }
 
-function move(dx, dy) {
-    if (!myId || gameWon) return;
+let lastClickTime = 0;
+// Modify the move function
+function move(deltaX, deltaY) {
+    if (!myId || gameWon || !localPlayer) return;
+
+    const now = Date.now();
+    if (now - lastClickTime < 100) return; // Limit to 10 clicks per second
+    lastClickTime = now;
+
+    const currentTime = Date.now();
+    const newX = Math.min(Math.max(localPlayer.position.x + deltaX, 0), 1);
+    const newY = Math.min(Math.max(localPlayer.position.y + deltaY, 0), 1);
+    
+    // Update local state immediately
+    localPlayer.position = { x: newX, y: newY };
+    localPlayer.lastUpdate = currentTime;
+    localPlayer.trail.push({ x: newX, y: newY, t: currentTime });
+    state[myId] = localPlayer;
+    
+    // Broadcast our new position to others
+    const updateMessage = {
+        type: 'playerUpdate',
+        playerId: myId,
+        position: localPlayer.position,
+        trail: localPlayer.trail,
+        lastUpdate: localPlayer.lastUpdate
+    };
 
     if (isHost) {
-        handlePlayerMove(myId, dx, dy);
-    } else {
-        connections.get([...connections.keys()][0]).send({
-            type: 'move',
-            playerId: myId,
-            dx: dx,
-            dy: dy
-        });
-        
-        if (!localPlayer) {
-            localPlayer = state[myId] || { 
-                position: { x: 0.5, y: 0.5 }, 
-                trail: [],
-                lastUpdate: Date.now()
-            };
+        // Host broadcasts to all clients
+        for (const connection of connections.values()) {
+            connection.send(updateMessage);
         }
-        const newX = Math.min(Math.max(localPlayer.position.x + dx, 0), 1);
-        const newY = Math.min(Math.max(localPlayer.position.y + dy, 0), 1);
-        localPlayer.position = { x: newX, y: newY };
-        localPlayer.lastUpdate = Date.now();
-        localPlayer.trail.push({ 
-            x: newX, 
-            y: newY, 
-            t: localPlayer.lastUpdate 
-        });
-        state[myId] = localPlayer;
-        draw();
+        // Host also computes coverage and checks for winner
+        const coverage = computeCoverage();
+        const winner = checkWinner(coverage);
+        broadcastState();
+    } else {
+        // Client sends to host
+        const hostConnection = connections.get([...connections.keys()][0]);
+        if (hostConnection) {
+            hostConnection.send(updateMessage);
+        }
     }
+
+    draw();
 }
 
 function resizeCanvas() {
