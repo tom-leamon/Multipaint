@@ -11,6 +11,8 @@
       padding: 0;
       overflow: hidden;
       touch-action: manipulation;
+      font-family: sans-serif;
+      font-weight: bold;
     }
     canvas {
       display: block;
@@ -58,9 +60,7 @@
       top: 10px;
       right: 10px;
       font-size: 16px;
-      color: white;
-      background: rgba(0, 0, 0, 0.5);
-      padding: 10px;
+      color: rgba(255,255,255,.5);
     }
     #winOverlay {
       position: fixed;
@@ -101,14 +101,14 @@ const WIN_PERCENTAGE = 8
 const WIN_ADVANTAGE = 2
 
 const PLAYER_COLORS = [
-    { name: 'Red', hex: '#FF4444' },
-    { name: 'Blue', hex: '#4444FF' },
-    { name: 'Green', hex: '#44FF44' },
-    { name: 'Yellow', hex: '#FFFF44' },
-    { name: 'Purple', hex: '#FF44FF' },
-    { name: 'Cyan', hex: '#44FFFF' },
-    { name: 'Orange', hex: '#FF8844' },
-    { name: 'Pink', hex: '#FF88BB' }
+  { name: 'RED', hex: '#FF4444' },
+  { name: 'BLUE', hex: '#4444FF' },
+  { name: 'GREEN', hex: '#44FF44' },
+  { name: 'YELLOW', hex: '#FFFF44' },
+  { name: 'PURPLE', hex: '#FF44FF' },
+  { name: 'CYAN', hex: '#44FFFF' },
+  { name: 'ORANGE', hex: '#FF8844' },
+  { name: 'PINK', hex: '#FF88BB' }
 ];
 
 let peer;
@@ -281,7 +281,7 @@ function initializePeer() {
             isHost = true;
             window.history.replaceState(null, '', `?host=${id}`);
             document.getElementById('connectionStatus').textContent = 
-                `You're hosting!`;
+                `You're hosting! Share this link!`;
             initializeAsHost();
         } else if (hostId !== id) {
             connectToHost(hostId);
@@ -306,14 +306,50 @@ function initializeAsHost() {
     broadcastState();
 }
 
+function becomeHost() {
+    console.log("Becoming the new host...");
+    isHost = true;
+    myId = peer.id || generateTempId();
+    window.history.replaceState(null, '', `?host=${myId}`);
+    document.getElementById('connectionStatus').textContent = "You're hosting! Share this link!";
+    
+    initializeAsHost();
+}
+
+// Fallback ID generator (in case PeerJS fails)
+function generateTempId() {
+    return 'host-' + Math.random().toString(36).substr(2, 9);
+}
+
+
 function connectToHost(hostId) {
-    const conn = peer.connect(hostId);
+    console.log(`Attempting to connect to host: ${hostId}`);
+    const conn = peer.connect(hostId, { reliable: true });
+
     conn.on('open', () => {
+        console.log('Connected to host successfully!');
         connections.set(hostId, conn);
         document.getElementById('connectionStatus').textContent = 'Connected to host!';
     });
+
     conn.on('data', handleMessage);
+
+    conn.on('error', (err) => {
+        console.error(`Connection failed to host ${hostId}:`, err);
+        becomeHost(); // If connection fails, take over as host
+    });
+
+    conn.on('close', () => {
+        console.warn(`Lost connection to host ${hostId}, becoming host.`);
+        becomeHost(); // If the connection unexpectedly closes, take over
+    });
+
+        if (!connections.has(hostId)) {
+            console.warn(`Timeout: Could not establish connection to ${hostId}, switching to host mode.`);
+            becomeHost();
+        }
 }
+
 
 // Move the reset logic into a separate function
 function resetGame() {
