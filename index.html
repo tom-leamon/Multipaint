@@ -100,6 +100,17 @@ const trailThicknessNorm = 4 / BASE_WIDTH;
 const WIN_PERCENTAGE = 8
 const WIN_ADVANTAGE = 2
 
+const PLAYER_COLORS = [
+    { name: 'Red', hex: '#FF4444' },
+    { name: 'Blue', hex: '#4444FF' },
+    { name: 'Green', hex: '#44FF44' },
+    { name: 'Yellow', hex: '#FFFF44' },
+    { name: 'Purple', hex: '#FF44FF' },
+    { name: 'Cyan', hex: '#44FFFF' },
+    { name: 'Orange', hex: '#FF8844' },
+    { name: 'Pink', hex: '#FF88BB' }
+];
+
 let peer;
 let connections = new Map(); // PeerID -> Connection
 let state = {};
@@ -109,6 +120,20 @@ let gameActive = true;
 let isHost = false;
 let myId = null;
 let resetTimer = null;
+let usedColors = new Set();
+
+function getNextAvailableColor() {
+    const availableColors = PLAYER_COLORS.filter(color => !usedColors.has(color.name));
+    if (availableColors.length === 0) {
+        // If all colors are used, reset the pool
+        usedColors.clear();
+        return PLAYER_COLORS[0];
+    }
+    const color = availableColors[0];
+    usedColors.add(color.name);
+    return color;
+}
+
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -269,9 +294,11 @@ function initializePeer() {
 
 function initializeAsHost() {
     const now = Date.now();
+    const playerColor = getNextAvailableColor();
     state[myId] = {
         position: { x: 0.5, y: 0.5 },
-        color: getRandomColor(),
+        color: playerColor.hex,
+        colorName: playerColor.name,
         trail: [{ x: 0.5, y: 0.5, t: now }],
         lastUpdate: now
     };
@@ -288,22 +315,54 @@ function connectToHost(hostId) {
     conn.on('data', handleMessage);
 }
 
+// Move the reset logic into a separate function
+function resetGame() {
+    // Clear any existing reset timer
+    if (resetTimer) {
+        clearTimeout(resetTimer);
+        resetTimer = null;
+    }
+    
+    const now = Date.now();
+    for (const playerId in state) {
+        state[playerId].position = { x: 0.5, y: 0.5 };
+        state[playerId].trail = [{ x: 0.5, y: 0.5, t: now }];
+        state[playerId].lastUpdate = now;
+    }
+    
+    gameActive = true;
+    gameWon = false;
+    hideWinOverlay();
+    
+    if (isHost) {
+        broadcastState();
+    }
+}
+
 function handleNewConnection(conn) {
     conn.on('open', () => {
         connections.set(conn.peer, conn);
         const now = Date.now();
+        const playerColor = getNextAvailableColor();
         state[conn.peer] = {
             position: { x: 0.5, y: 0.5 },
-            color: getRandomColor(),
+            color: playerColor.hex,
+            colorName: playerColor.name,
             trail: [{ x: 0.5, y: 0.5, t: now }],
             lastUpdate: now
         };
-        broadcastState();
+        
+        // Reset the game when a new player connects
+        resetGame();
     });
 
     conn.on('data', handleMessage);
     
     conn.on('close', () => {
+        // Free up the color when a player disconnects
+        if (state[conn.peer]) {
+            usedColors.delete(state[conn.peer].colorName);
+        }
         connections.delete(conn.peer);
         delete state[conn.peer];
         broadcastState();
@@ -440,7 +499,7 @@ function updateCoverage(coverage) {
     let html = '';
     for (const id in coverage) {
         if (state[id]) {
-            html += `<div style="color: ${state[id].color};">${coverage[id]}%</div>`;
+            html += `<div style="color: ${state[id].color};">${state[id].colorName}: ${coverage[id]}%</div>`;
         }
     }
     display.innerHTML = html;
@@ -450,7 +509,7 @@ function showWinOverlay(winnerId) {
     if (!state[winnerId]) return;
     winOverlay.style.display = 'flex';
     winOverlay.style.color = state[winnerId].color;
-    winOverlay.innerHTML = `WINNER!<br>Restarting in 5 seconds...`;
+    winOverlay.innerHTML = `${state[winnerId].colorName} WINS!<br>Restarting in 5 seconds...`;
 }
 
 function hideWinOverlay() {
